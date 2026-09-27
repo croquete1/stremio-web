@@ -15,6 +15,8 @@ SERVER=$!
 sleep 2
 
 sudo dmesg --clear || true
+( while true; do echo "--- $(date +%T)"; ps -eo pid,ppid,stat,etimes,rss,comm,args | grep -iE 'WebKit|stremio|bwrap' | grep -v grep | cut -c1-200; sleep 5; done ) > "$OUT/procs.log" 2>&1 &
+PS_LOOP=$!
 START=$(date +%s)
 # The shell's startup URL is the local web build; software rendering under Xvfb.
 timeout --preserve-status -s TERM 170 dbus-run-session -- xvfb-run -a -s "-screen 0 1920x1080x24" \
@@ -22,7 +24,7 @@ timeout --preserve-status -s TERM 170 dbus-run-session -- xvfb-run -a -s "-scree
     com.stremio.Stremio.Devel --url http://127.0.0.1:18080/ > "$OUT/shell.stdout" 2> "$OUT/shell.stderr"
 STATUS=$?
 END=$(date +%s)
-kill $SERVER 2>/dev/null
+kill $SERVER $PS_LOOP 2>/dev/null
 
 sudo dmesg | grep -iE 'segfault|trap|general protection|webkit' > "$OUT/dmesg.txt" || true
 CLICKS=$(grep -c ' CLICK ' "$OUT/steps.log" 2>/dev/null || echo 0)

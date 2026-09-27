@@ -18,6 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         variant: [beta39, beta40, beta40-no-view-transition]
+        webkit: [current, pre-2026-09-23]
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -38,6 +39,14 @@ jobs:
           flatpak --user install -y --noninteractive flathub org.gnome.Platform//50
           gh release download v1.2.0 -R Stremio/stremio-linux-shell -p 'com.stremio.Stremio.Devel.flatpak'
           flatpak --user install -y --noninteractive ./com.stremio.Stremio.Devel.flatpak
+
+      - name: Pin the runtime to a commit before 2026-09-23 (WebKitGTK 2.52.x)
+        if: matrix.webkit == 'pre-2026-09-23'
+        run: |
+          flatpak --user remote-info --log flathub org.gnome.Platform//50 | grep -E 'Commit:|Date:' | paste - - | head -20 | tee runtime-log.txt
+          COMMIT=$(awk '{ if ($4 < "2026-09-23") { print $2; exit } }' runtime-log.txt)
+          echo "pinned commit: $COMMIT"
+          flatpak --user update -y --noninteractive --commit="$COMMIT" org.gnome.Platform//50
 
       - name: Record environment
         run: |
@@ -83,10 +92,10 @@ jobs:
           echo "v5.0.0-beta.40 source + diagnostic.diff" > ../out/web.txt
 
       - name: Run shell (${{ matrix.variant }})
-        run: bash diag/run.sh site ${{ matrix.variant }}
+        run: bash diag/run.sh site ${{ matrix.variant }}-${{ matrix.webkit }}
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: diag-2815-${{ matrix.variant }}
+          name: diag-2815-${{ matrix.variant }}-${{ matrix.webkit }}
           path: out
