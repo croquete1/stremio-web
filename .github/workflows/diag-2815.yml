@@ -1,0 +1,92 @@
+# Diagnostic only (fork): reproduce stremio-bugs#2815 with the real Linux shell Flatpak.
+name: diag-2815
+
+on:
+  push:
+    branches:
+      - diag/2815-linux-repro
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [beta39, beta40, beta40-no-view-transition]
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Flatpak and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak xvfb dbus-x11 unzip
+
+      - name: Install GNOME 50 runtime and the Linux shell bundle (v1.2.0)
+        run: |
+          flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak --user install -y --noninteractive flathub org.gnome.Platform//50
+          gh release download v1.2.0 -R Stremio/stremio-linux-shell -p 'com.stremio.Stremio.Devel.flatpak'
+          flatpak --user install -y --noninteractive ./com.stremio.Stremio.Devel.flatpak
+
+      - name: Record environment
+        run: |
+          mkdir -p out
+          {
+            echo "runner: $(lsb_release -ds) kernel $(uname -r)"
+            flatpak --user info org.gnome.Platform//50 | grep -E 'Ref|Version|Commit|Date'
+            flatpak --user info com.stremio.Stremio.Devel | grep -E 'Ref|Version|Commit|Date|Runtime'
+            flatpak run --user --command=python3 org.gnome.Platform//50 -c "import gi; gi.require_version('WebKit', '6.0'); gi.require_version('Gtk', '4.0'); from gi.repository import WebKit, Gtk; print('WebKitGTK', WebKit.get_major_version(), WebKit.get_minor_version(), WebKit.get_micro_version()); print('GTK', Gtk.get_major_version(), Gtk.get_minor_version(), Gtk.get_micro_version())" || echo "gi query failed"
+            flatpak run --user --command=sh org.gnome.Platform//50 -c 'ls /usr/lib/x86_64-linux-gnu/ | grep -i webkitgtk-6' || true
+            echo "display: Xvfb 1920x1080x24 (X11, GTK fallback-x11), software rendering, WEBKIT_DISABLE_DMABUF_RENDERER=1"
+          } | tee out/environment.txt
+
+      - name: Released web build
+        if: matrix.variant != 'beta40-no-view-transition'
+        run: |
+          TAG=v5.0.0-${{ matrix.variant == 'beta39' && 'beta.39' || 'beta.40' }}
+          gh release download "$TAG" -R Stremio/stremio-web -p stremio-web.zip
+          mkdir site && unzip -q stremio-web.zip -d site
+          if [ ! -f site/index.html ]; then mv site/*/* site/ 2>/dev/null || true; fi
+          ls site | head
+          echo "$TAG release zip" > out/web.txt
+
+      - name: Checkout web beta.40 source
+        if: matrix.variant == 'beta40-no-view-transition'
+        uses: actions/checkout@v4
+        with:
+          repository: Stremio/stremio-web
+          ref: v5.0.0-beta.40
+          path: websrc
+
+      - name: Build beta.40 with only the View Transition path disabled
+        if: matrix.variant == 'beta40-no-view-transition'
+        run: |
+          cd websrc
+          grep -n "typeof document.startViewTransition === 'function' &&" src/router/Routes.tsx
+          sed -i "s/typeof document.startViewTransition === 'function' \&\&/false \&\& typeof document.startViewTransition === 'function' \&\&/" src/router/Routes.tsx
+          git diff | tee ../out/diagnostic.diff
+          corepack enable || true
+          npx -y pnpm@11.8.0 install --frozen-lockfile
+          npx -y pnpm@11.8.0 build
+          cp -r build ../site
+          echo "v5.0.0-beta.40 source + diagnostic.diff" > ../out/web.txt
+
+      - name: Run shell (${{ matrix.variant }})
+        run: bash diag/run.sh site ${{ matrix.variant }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-2815-${{ matrix.variant }}
+          path: out
