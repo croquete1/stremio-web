@@ -1,0 +1,2 @@
+FROM archlinux:latest
+RUN pacman -Syu --noconfirm --needed gtk4 libadwaita webkitgtk-6.0 mpv libepoxy nodejs dbus mesa xorg-server-xvfb xorg-xauth which >/dev/null && pacman -Q webkitgtk-6.0 gtk4

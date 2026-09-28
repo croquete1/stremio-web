@@ -1,4 +1,5 @@
-# Diagnostic only (fork): reproduce stremio-bugs#2815 with the real Linux shell Flatpak.
+# Diagnostic only (fork): reproduce stremio-bugs#2815 with the real Linux shell
+# (reporter-like WebKitGTK 2.52.x, DMABUF renderer disabled).
 name: diag-2815
 
 on:
@@ -10,87 +11,120 @@ on:
 permissions:
   contents: read
 
+env:
+  RUNTIME_COMMIT: fc150bcbb560aebb920738976c963cbdb7f83498d583221dadd942870b1bf307
+
 jobs:
-  repro:
+  flatpak:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [beta39, beta40, beta40-novt, fix]
+        rep: [1, 2, 3]
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Flatpak and Xvfb
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq flatpak xvfb dbus-x11 unzip >/dev/null
+      - name: GNOME 50 runtime pinned to WebKitGTK 2.52.5, Linux shell v1.2.0 bundle
+        run: |
+          flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak --user install -y --noninteractive flathub org.gnome.Platform//50 >/dev/null
+          gh release download v1.2.0 -R Stremio/stremio-linux-shell -p 'com.stremio.Stremio.Devel.flatpak'
+          sha256sum com.stremio.Stremio.Devel.flatpak
+          flatpak --user install -y --noninteractive ./com.stremio.Stremio.Devel.flatpak >/dev/null
+          flatpak --user update -y --noninteractive --no-related --commit="$RUNTIME_COMMIT" org.gnome.Platform//50
+          flatpak --user info org.gnome.Platform//50 | grep -q "$RUNTIME_COMMIT" || { echo "PIN FAILED"; exit 1; }
+      - name: Released web build
+        if: matrix.variant == 'beta39' || matrix.variant == 'beta40'
+        run: |
+          mkdir -p out
+          TAG=v5.0.0-${{ matrix.variant == 'beta39' && 'beta.39' || 'beta.40' }}
+          gh release download "$TAG" -R Stremio/stremio-web -p stremio-web.zip
+          mkdir site && unzip -q stremio-web.zip -d site
+          if [ ! -f site/index.html ]; then mv site/*/* site/ 2>/dev/null || true; fi
+          echo "web $TAG release zip" > out/web.txt
+      - name: Checkout web source
+        if: matrix.variant == 'beta40-novt' || matrix.variant == 'fix'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.variant == 'fix' && 'croquete1/stremio-web' || 'Stremio/stremio-web' }}
+          ref: ${{ matrix.variant == 'fix' && 'fix/linux-webkit-view-transition-crash' || 'v5.0.0-beta.40' }}
+          path: websrc
+      - name: Build web
+        if: matrix.variant == 'beta40-novt' || matrix.variant == 'fix'
+        run: |
+          mkdir -p out
+          cd websrc
+          if [ "${{ matrix.variant }}" = beta40-novt ]; then bash ../diag/novt.sh; fi
+          echo "web ${{ matrix.variant }} $(git rev-parse HEAD) dirty=$(git status --porcelain | wc -l)" > ../out/web.txt
+          npx -y pnpm@11.8.0 install --frozen-lockfile >/dev/null
+          npx -y pnpm@11.8.0 build >/dev/null
+          cp -r build ../site
+      - name: Run shell (${{ matrix.variant }})
+        run: bash diag/run.sh site ${{ matrix.variant }}-${{ matrix.rep }} flatpak
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-2815-${{ matrix.variant }}-${{ matrix.rep }}
+          path: out
+
+  native:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        variant: [development, fix]
-        webkit: [current]
-        rep: [1, 2]
+        variant: [beta40, fix]
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-
-      - name: Install Flatpak and Xvfb
+      - name: Build shell v1.2.0 natively (Arch, distro WebKitGTK)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y flatpak xvfb dbus-x11 unzip
-
-      - name: Install GNOME 50 runtime and the Linux shell bundle (v1.2.0)
-        run: |
-          flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          flatpak --user install -y --noninteractive flathub org.gnome.Platform//50
-          gh release download v1.2.0 -R Stremio/stremio-linux-shell -p 'com.stremio.Stremio.Devel.flatpak'
-          flatpak --user install -y --noninteractive ./com.stremio.Stremio.Devel.flatpak
-
-      - name: Pin the runtime to a commit before 2026-09-23 (WebKitGTK 2.52.x)
-        if: matrix.webkit == 'pre-2026-09-23'
-        run: |
-          flatpak --user remote-info --log flathub org.gnome.Platform//50 | grep -E 'Commit:|Date:' | paste - - | head -20 | tee runtime-log.txt
-          COMMIT=$(awk '{ if ($4 < "2026-09-23") { print $2; exit } }' runtime-log.txt)
-          echo "pinned commit: $COMMIT"
-          flatpak --user update -y --noninteractive --commit="$COMMIT" org.gnome.Platform//50
-
-      - name: Record environment
+          git clone -q --depth 1 -b v1.2.0 https://github.com/Stremio/stremio-linux-shell shell
+          docker run --rm -v "$PWD/shell:/src" -v "$PWD/diag:/diag" -w /src archlinux:latest bash /diag/build-native.sh
+          mv shell/nativebin nativebin
+          docker build -q -t stremio-native -f diag/Dockerfile.native diag
+      - name: Released web build
+        if: matrix.variant == 'beta40'
         run: |
           mkdir -p out
-          {
-            echo "runner: $(lsb_release -ds) kernel $(uname -r)"
-            flatpak --user info org.gnome.Platform//50 | grep -E 'Ref|Version|Commit|Date'
-            flatpak --user info com.stremio.Stremio.Devel | grep -E 'Ref|Version|Commit|Date|Runtime'
-            flatpak run --user --command=python3 org.gnome.Platform//50 -c "import gi; gi.require_version('WebKit', '6.0'); gi.require_version('Gtk', '4.0'); from gi.repository import WebKit, Gtk; print('WebKitGTK', WebKit.get_major_version(), WebKit.get_minor_version(), WebKit.get_micro_version()); print('GTK', Gtk.get_major_version(), Gtk.get_minor_version(), Gtk.get_micro_version())" || echo "gi query failed"
-            flatpak run --user --command=sh org.gnome.Platform//50 -c 'ls /usr/lib/x86_64-linux-gnu/ | grep -i webkitgtk-6' || true
-            echo "display: Xvfb 1920x1080x24 (X11, GTK fallback-x11), software rendering, WEBKIT_DISABLE_DMABUF_RENDERER=1"
-          } | tee out/environment.txt
-
-      - name: Released web build
-        if: false
-        run: |
-          TAG=v5.0.0-${{ matrix.variant == 'beta39' && 'beta.39' || 'beta.40' }}
-          gh release download "$TAG" -R Stremio/stremio-web -p stremio-web.zip
+          gh release download v5.0.0-beta.40 -R Stremio/stremio-web -p stremio-web.zip
           mkdir site && unzip -q stremio-web.zip -d site
           if [ ! -f site/index.html ]; then mv site/*/* site/ 2>/dev/null || true; fi
-          ls site | head
-          echo "$TAG release zip" > out/web.txt
-
+          echo "web v5.0.0-beta.40 release zip" > out/web.txt
       - name: Checkout web source
+        if: matrix.variant == 'fix'
         uses: actions/checkout@v4
         with:
-          repository: ${{ matrix.variant == 'fix' && 'croquete1/stremio-web' || 'Stremio/stremio-web' }}
-          ref: ${{ matrix.variant == 'fix' && 'fix/linux-webkit-view-transition-crash' || 'development' }}
+          repository: croquete1/stremio-web
+          ref: fix/linux-webkit-view-transition-crash
           path: websrc
-
       - name: Build web
+        if: matrix.variant == 'fix'
         run: |
+          mkdir -p out
           cd websrc
-          git log -1 --format='web %H %s' | tee ../out/web.txt
-          npx -y pnpm@11.8.0 install --frozen-lockfile
-          npx -y pnpm@11.8.0 build
+          echo "web fix $(git rev-parse HEAD)" > ../out/web.txt
+          npx -y pnpm@11.8.0 install --frozen-lockfile >/dev/null
+          npx -y pnpm@11.8.0 build >/dev/null
           cp -r build ../site
-
-      - name: Run shell (${{ matrix.variant }})
-        run: bash diag/run.sh site ${{ matrix.variant }}-${{ matrix.rep }}
-
+      - name: Run native shell (${{ matrix.variant }})
+        run: for rep in 1 2 3; do bash diag/run.sh site native-${{ matrix.variant }}-$rep native; done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: diag-2815-${{ matrix.variant }}-${{ matrix.rep }}
+          name: diag-2815-native-${{ matrix.variant }}
           path: out
