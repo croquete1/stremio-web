@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 env:
-  RUNTIME_COMMIT: fc150bcbb560aebb920738976c963cbdb7f83498d583221dadd942870b1bf307
+  RUNTIME_COMMIT: 545da92354a265d2c3572c91c39ac14dd7e74f9d8f9b66744ad50f478d2497c5
 
 jobs:
   flatpak:
