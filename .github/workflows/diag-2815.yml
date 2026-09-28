@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false
+      max-parallel: 6
       matrix:
         variant: [beta39, beta40, beta40-novt, fix]
         rep: [1, 2, 3]
@@ -41,7 +42,10 @@ jobs:
           gh release download v1.2.0 -R Stremio/stremio-linux-shell -p 'com.stremio.Stremio.Devel.flatpak'
           sha256sum com.stremio.Stremio.Devel.flatpak
           flatpak --user install -y --noninteractive ./com.stremio.Stremio.Devel.flatpak >/dev/null
-          flatpak --user update -y --noninteractive --no-related --commit="$RUNTIME_COMMIT" org.gnome.Platform//50
+          for attempt in 1 2 3 4 5; do
+            flatpak --user update -y --noninteractive --no-related --commit="$RUNTIME_COMMIT" org.gnome.Platform//50 && break
+            echo "pin attempt $attempt failed"; sleep $((attempt * 20))
+          done
           flatpak --user info org.gnome.Platform//50 | grep -q "$RUNTIME_COMMIT" || { echo "PIN FAILED"; exit 1; }
       - name: Released web build
         if: matrix.variant == 'beta39' || matrix.variant == 'beta40'
@@ -78,6 +82,7 @@ jobs:
           path: out
 
   native:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
