@@ -34,7 +34,7 @@ jobs:
       - name: Install Flatpak and Xvfb
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq flatpak xvfb dbus-x11 unzip >/dev/null
+          sudo apt-get install -y -qq flatpak ostree xvfb dbus-x11 unzip >/dev/null
       - name: GNOME 50 runtime pinned to WebKitGTK 2.52.5, Linux shell v1.2.0 bundle
         run: |
           flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
@@ -42,6 +42,8 @@ jobs:
           gh release download v1.2.0 -R Stremio/stremio-linux-shell -p 'com.stremio.Stremio.Devel.flatpak'
           sha256sum com.stremio.Stremio.Devel.flatpak
           flatpak --user install -y --noninteractive ./com.stremio.Stremio.Devel.flatpak >/dev/null
+          # Flathub intermittently returns HTTP/2 framing errors for large objects; fetch over HTTP/1.1.
+          ostree --repo="$HOME/.local/share/flatpak/repo" config set 'remote "flathub".http2' false
           for attempt in 1 2 3 4 5; do
             flatpak --user update -y --noninteractive --no-related --commit="$RUNTIME_COMMIT" org.gnome.Platform//50 && break
             echo "pin attempt $attempt failed"; sleep $((attempt * 20))
